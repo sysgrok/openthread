@@ -1398,14 +1398,7 @@ impl<'a> OtContext<'a> {
         let state = self.state();
 
         let rx_on_when_idle = unsafe { otThreadGetLinkMode(state.ot.instance) }.mRxOnWhenIdle();
-
-        if state.ot.radio_conf.rx_when_idle != rx_on_when_idle {
-            info!(
-                "Updating rx_when_idle: {} -> {}",
-                state.ot.radio_conf.rx_when_idle, rx_on_when_idle
-            );
-            state.ot.radio_conf.rx_when_idle = rx_on_when_idle;
-        }
+        Self::update_rx_when_idle(state, rx_on_when_idle);
 
         state.ot.changes.signal(());
     }
@@ -1525,9 +1518,15 @@ impl<'a> OtContext<'a> {
             rx_on_when_idle
         );
 
-        let state = self.state();
+        Self::update_rx_when_idle(self.state(), rx_on_when_idle);
+    }
 
+    fn update_rx_when_idle(state: &mut OtActiveState<'_>, rx_on_when_idle: bool) {
         if state.ot.radio_conf.rx_when_idle != rx_on_when_idle {
+            info!(
+                "Updating rx_when_idle: {} -> {}",
+                state.ot.radio_conf.rx_when_idle, rx_on_when_idle
+            );
             state.ot.radio_conf.rx_when_idle = rx_on_when_idle;
         }
     }
