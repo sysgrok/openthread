@@ -1301,12 +1301,8 @@ impl<'a> OtContext<'a> {
     fn process_tasklets(&mut self) {
         let instance = self.state().ot.instance;
 
-        loop {
+        while unsafe { otTaskletsArePending(instance) } {
             unsafe { otTaskletsProcess(instance) };
-
-            if !unsafe { otTaskletsArePending(instance) } {
-                break;
-            }
         }
     }
 
