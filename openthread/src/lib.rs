@@ -77,7 +77,7 @@ use sys::{
     otOperationalDataset, otOperationalDatasetTlvs, otPlatAlarmMilliFired, otPlatRadioReceiveDone,
     otPlatRadioTxDone, otPlatRadioTxStarted, otRadioCaps, otRadioFrame, otSetStateChangedCallback,
     otTaskletsArePending, otTaskletsProcess, otThreadGetDeviceRole, otThreadGetExtendedPanId,
-    otThreadSetEnabled, OT_RADIO_CAPS_ACK_TIMEOUT, OT_RADIO_FRAME_MAX_SIZE,
+    otThreadGetLinkMode, otThreadSetEnabled, OT_RADIO_CAPS_ACK_TIMEOUT, OT_RADIO_FRAME_MAX_SIZE,
 };
 
 /// A newtype wrapper over the native OpenThread error type (`otError`).
@@ -1394,7 +1394,20 @@ impl<'a> OtContext<'a> {
 
     fn plat_changed(&mut self, _flags: u32) {
         trace!("Plat changed callback");
-        self.state().ot.changes.signal(());
+
+        let state = self.state();
+
+        let rx_on_when_idle = unsafe { otThreadGetLinkMode(state.ot.instance) }.mRxOnWhenIdle();
+
+        if state.ot.radio_conf.rx_when_idle != rx_on_when_idle {
+            info!(
+                "Updating rx_when_idle: {} -> {}",
+                state.ot.radio_conf.rx_when_idle, rx_on_when_idle
+            );
+            state.ot.radio_conf.rx_when_idle = rx_on_when_idle;
+        }
+
+        state.ot.changes.signal(());
     }
 
     fn plat_now(&mut self) -> u32 {
@@ -1503,6 +1516,19 @@ impl<'a> OtContext<'a> {
 
         if state.ot.radio_conf.promiscuous != promiscuous {
             state.ot.radio_conf.promiscuous = promiscuous;
+        }
+    }
+
+    fn plat_radio_set_rx_on_when_idle(&mut self, rx_on_when_idle: bool) {
+        info!(
+            "Plat radio set rx_on_when_idle callback, rx_on_when_idle: {}",
+            rx_on_when_idle
+        );
+
+        let state = self.state();
+
+        if state.ot.radio_conf.rx_when_idle != rx_on_when_idle {
+            state.ot.radio_conf.rx_when_idle = rx_on_when_idle;
         }
     }
 
