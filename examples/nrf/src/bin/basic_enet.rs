@@ -127,7 +127,7 @@ async fn main(spawner: Spawner) {
     let proxy_radio_resources = mk_static!(ProxyRadioResources, ProxyRadioResources::new());
     let (proxy_radio, phy_radio_runner) = ProxyRadio::new(proxy_radio_resources);
 
-    // High-priority executor: EGU1_SWI0, priority level 7
+    // High-priority executor: EGU0_SWI0, priority level 7
     interrupt::EGU0_SWI0.set_priority(Priority::P7);
 
     let spawner_high = EXECUTOR_HIGH.start(interrupt::EGU0_SWI0);
