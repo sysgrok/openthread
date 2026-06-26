@@ -80,11 +80,10 @@ use sys::{
     otIp6GetUnicastAddresses, otIp6IsEnabled, otIp6NewMessageFromBuffer, otIp6Send,
     otIp6SetEnabled, otIp6SetReceiveCallback, otLinkModeConfig, otMessage, otMessageFree,
     otMessageGetBufferInfo, otMessagePriority_OT_MESSAGE_PRIORITY_NORMAL, otMessageRead,
-    otMessageSettings,
-    otOperationalDataset, otOperationalDatasetTlvs, otPlatAlarmMilliFired, otPlatRadioReceiveDone,
-    otPlatRadioTxDone, otPlatRadioTxStarted, otRadioCaps, otRadioFrame, otSetStateChangedCallback,
-    otTaskletsProcess, otThreadGetDeviceRole, otThreadGetExtendedPanId, otThreadSetEnabled,
-    otThreadSetLinkMode, OT_CHANGED_THREAD_ROLE, OT_RADIO_CAPS_ACK_TIMEOUT,
+    otMessageSettings, otOperationalDataset, otOperationalDatasetTlvs, otPlatAlarmMilliFired,
+    otPlatRadioReceiveDone, otPlatRadioTxDone, otPlatRadioTxStarted, otRadioCaps, otRadioFrame,
+    otSetStateChangedCallback, otTaskletsProcess, otThreadGetDeviceRole, otThreadGetExtendedPanId,
+    otThreadSetEnabled, otThreadSetLinkMode, OT_CHANGED_THREAD_ROLE, OT_RADIO_CAPS_ACK_TIMEOUT,
     OT_RADIO_FRAME_MAX_SIZE,
 };
 
@@ -971,7 +970,7 @@ impl<'a> OpenThread<'a> {
                             Either::Second(result) => {
                                 let mut ot = self.activate();
 
-                                {
+                                let rx_when_idle = {
                                     let state = ot.state();
 
                                     match result {
@@ -1015,9 +1014,26 @@ impl<'a> OpenThread<'a> {
                                             }
                                         }
                                     }
-                                }
+
+                                    state.ot.radio_conf.rx_when_idle
+                                };
 
                                 ot.process_tasklets();
+
+                                // With rx-on-when-idle, OpenThread keeps the radio in
+                                // continuous receive and does NOT re-issue an explicit
+                                // `Rx` command for each frame — it expects a stream of
+                                // `otPlatRadioReceiveDone` callbacks. So keep draining by
+                                // looping straight back into `receive()` (still
+                                // preemptible by a pending Tx via the `new_cmd` arm of
+                                // the select above), rather than breaking out to wait for
+                                // the next radio command. Without this, after delivering
+                                // one frame we park on `radio_cmd().await` for an `Rx`
+                                // command that never comes; a radio with an internal RX
+                                // queue then fills it and goes deaf under sustained load.
+                                if rx_when_idle {
+                                    continue;
+                                }
 
                                 break;
                             }
