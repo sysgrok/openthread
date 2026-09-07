@@ -1,0 +1,132 @@
+# Firmware size report for every pull request.
+#
+# One example per MCU family is built twice, at the pull request's merge commit and at the
+# tip of the base branch, and the two ELFs are diffed with `cargo elfsize`. The report goes
+# to the job summary and is uploaded as an artifact, from where the `Size comment` workflow
+# (size-comment.yml) posts it as a pull request comment. On pushes to `main` only the
+# sizes of the pushed commit are reported.
+#
+# Both builds run in the same checkout directory on purpose: panic-location strings embed
+# absolute source paths, so building the base in a second directory with a different path
+# length shifts `.rodata` by kilobytes.
+#
+# The examples are built with `force-generate-bindings`, same as in `ci.yml`, so that the
+# OpenThread C libraries reflect the pull request's `openthread-sys` configuration rather
+# than the committed prebuilt ones, which may lag behind it.
+name: Size
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# A new push to a pull request supersedes the size run already in flight for it
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  # Growth above this many percent is marked in the report and annotated on the run
+  SIZE_WARN_PERCENT: "0.2"
+
+jobs:
+  size:
+    name: Size
+    runs-on: ubuntu-latest
+    permissions: read-all
+    strategy:
+      fail-fast: false
+      matrix:
+        # [family, examples feature, target, example, report label]
+        mcu:
+          - [esp, esp32c6, riscv32imac-unknown-none-elf, basic_udp, esp32c6]
+          - [esp, esp32h2, riscv32imac-unknown-none-elf, basic_udp, esp32h2]
+          - [nrf, default, thumbv7em-none-eabi, basic_udp, nrf52840]
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The base commit is checked out below
+          fetch-depth: 0
+
+      - name: openthread init
+        run: git submodule update --init --recursive
+
+      - uses: dtolnay/rust-toolchain@v1
+        with:
+          target: x86_64-unknown-linux-gnu
+          toolchain: nightly
+          components: rust-src
+
+      - name: Install MCU target
+        run: rustup target add ${{ matrix.mcu[2] }}
+
+      - name: Detect host target triple
+        run: |
+          export HOST_TARGET=$(rustup show | grep "Default host" | sed -e 's/.* //')
+          echo "HOST_TARGET=$HOST_TARGET" >> $GITHUB_ENV
+
+      - name: Install espup
+        run: |
+          curl -LO https://github.com/esp-rs/espup/releases/latest/download/espup-${{ env.HOST_TARGET }}.zip
+          unzip -o espup-${{ env.HOST_TARGET }}.zip -d "$HOME/.cargo/bin"
+          chmod +x "$HOME/.cargo/bin/espup"*
+          echo "ESPUP_EXPORT_FILE=$HOME/exports" >> $GITHUB_ENV
+
+      - name: Install espup toolchains (xtensa and riscv)
+        if: matrix.mcu[0] == 'esp'
+        run: |
+          source "$HOME/.cargo/env"
+          "$HOME/.cargo/bin/espup" install -e -r
+          source "$HOME/exports"
+          echo "${LIBCLANG_PATH}/../bin:$PATH" >> "$GITHUB_PATH"
+          echo "LIBCLANG_PATH=${LIBCLANG_PATH}" >> "$GITHUB_ENV"
+          echo "CLANG_PATH=${CLANG_PATH}" >> "$GITHUB_ENV"
+
+      # Not yet published; until then, built from the `size-check` branch of embuild
+      - name: Install cargo-elfsize
+        run: cargo install --git https://github.com/esp-rs/embuild --branch size-check cargo-elfsize
+
+      - name: Build - Head
+        run: |
+          cd examples/${{ matrix.mcu[0] }}
+          cargo build --release --no-default-features --features ${{ matrix.mcu[1] }},force-generate-bindings --target ${{ matrix.mcu[2] }} -Zbuild-std=core,alloc,panic_abort --bin ${{ matrix.mcu[3] }}
+          cp target/${{ matrix.mcu[2] }}/release/${{ matrix.mcu[3] }} "$RUNNER_TEMP/head.elf"
+
+      - name: Check out the base commit
+        if: github.event_name == 'pull_request'
+        run: |
+          git checkout --detach ${{ github.event.pull_request.base.sha }}
+          git submodule update --init --recursive
+
+      - name: Build - Base
+        if: github.event_name == 'pull_request'
+        run: |
+          cd examples/${{ matrix.mcu[0] }}
+          cargo build --release --no-default-features --features ${{ matrix.mcu[1] }},force-generate-bindings --target ${{ matrix.mcu[2] }} -Zbuild-std=core,alloc,panic_abort --bin ${{ matrix.mcu[3] }}
+          cp target/${{ matrix.mcu[2] }}/release/${{ matrix.mcu[3] }} "$RUNNER_TEMP/base.elf"
+
+      - name: Size report
+        run: |
+          title="${{ matrix.mcu[3] }} on ${{ matrix.mcu[4] }} (${{ matrix.mcu[2] }})"
+          if [ -f "$RUNNER_TEMP/base.elf" ]; then
+            cargo elfsize --title "$title" --warn "$SIZE_WARN_PERCENT" "$RUNNER_TEMP/base.elf" "$RUNNER_TEMP/head.elf" > "$RUNNER_TEMP/report.txt"
+          else
+            cargo elfsize --title "$title" "$RUNNER_TEMP/head.elf" > "$RUNNER_TEMP/report.txt"
+          fi
+          # Printed as-is so that the runner picks up the `::warning::` annotations;
+          # the artifact and summary get the markdown alone
+          cat "$RUNNER_TEMP/report.txt"
+          mkdir -p size
+          grep -v '^::' "$RUNNER_TEMP/report.txt" > size/${{ matrix.mcu[4] }}.md
+          cat size/${{ matrix.mcu[4] }}.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload size report
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: size-${{ matrix.mcu[4] }}
+          path: size/
+          retention-days: 7
